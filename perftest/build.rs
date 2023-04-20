@@ -60,9 +60,10 @@ fn main() {
         custom_includes: Vec::new(),
         owned: false,
         hashbrown: false,
-        nostd: false,
+        alloc: false,
         gen_info: false,
         add_deprecated_fields: false,
+        generate_getters: false,
     };
     FileDescriptor::write_proto(&config).unwrap();
 

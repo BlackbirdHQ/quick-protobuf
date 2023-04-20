@@ -8,8 +8,7 @@
 //! It is advised, for convenience to directly work with a `Reader`.
 
 use core::iter::FusedIterator;
-#[cfg(feature = "std")]
-use std::borrow::ToOwned;
+use core::marker::PhantomData;
 #[cfg(feature = "std")]
 use std::fs::File;
 #[cfg(feature = "std")]
@@ -19,13 +18,11 @@ use std::path::Path;
 
 use core::convert::TryFrom;
 
-#[cfg(not(feature = "std"))]
+#[cfg(all(not(feature = "std"), feature = "alloc"))]
 extern crate alloc;
-#[cfg(not(feature = "std"))]
+#[cfg(all(not(feature = "std"), feature = "alloc"))]
 use alloc::borrow::Cow;
-#[cfg(not(feature = "std"))]
-use alloc::borrow::ToOwned;
-#[cfg(not(feature = "std"))]
+#[cfg(all(not(feature = "std"), feature = "alloc"))]
 use alloc::vec::Vec;
 
 use crate::errors::{Error, Result};
@@ -414,8 +411,7 @@ impl BytesReader {
     #[cfg_attr(std, inline)]
     pub fn read_bytes<'a>(&mut self, bytes: &'a [u8]) -> Result<&'a [u8]> {
         self.read_len_varint(bytes, |r, b| {
-            b.get(r.start..r.end)
-                .ok_or(Error::UnexpectedEndOfBuffer)
+            b.get(r.start..r.end).ok_or(Error::UnexpectedEndOfBuffer)
         })
     }
 
@@ -434,6 +430,7 @@ impl BytesReader {
     /// Note: packed field are stored as a variable length chunk of data, while regular repeated
     /// fields behaves like an iterator, yielding their tag everytime
     #[cfg_attr(std, inline)]
+    #[cfg(any(feature = "std", feature = "alloc"))]
     pub fn read_packed<'a, M, F>(&mut self, bytes: &'a [u8], mut read: F) -> Result<Vec<M>>
     where
         F: FnMut(&mut BytesReader, &'a [u8]) -> Result<M>,
@@ -447,6 +444,30 @@ impl BytesReader {
         })
     }
 
+    /// Reads packed repeated field (heapless::Vec<M, C>)
+    ///
+    /// Note: packed field are stored as a variable length chunk of data, while regular repeated
+    /// fields behaves like an iterator, yielding their tag everytime
+    #[cfg_attr(std, inline)]
+    #[cfg(feature = "heapless")]
+    pub fn read_packed_heapless<'a, M, F, const C: usize>(
+        &mut self,
+        bytes: &'a [u8],
+        mut read: F,
+    ) -> Result<heapless::Vec<M, C>>
+    where
+        F: FnMut(&mut BytesReader, &'a [u8]) -> Result<M>,
+    {
+        self.read_len_varint(bytes, |r, b| {
+            let mut v = heapless::Vec::new();
+            while !r.is_eof() {
+                v.push(read(r, b)?)
+                    .map_err(|_| Error::OutputBufferTooSmall)?;
+            }
+            Ok(v)
+        })
+    }
+
     /// Reads packed repeated field where M can directly be transmutted from raw bytes
     ///
     /// Note: packed field are stored as a variable length chunk of data, while regular repeated
@@ -455,10 +476,7 @@ impl BytesReader {
     pub fn read_packed_fixed<'a, M: Copy + PartialEq>(
         &mut self,
         bytes: &'a [u8],
-    ) -> Result<PackedFixed<'a, M>>
-    where
-        [M]: ToOwned,
-    {
+    ) -> Result<PackedFixed<'a, M>> {
         let len = self.read_varint32(bytes)? as usize;
         if self.len() < len {
             return Err(Error::UnexpectedEndOfBuffer);
@@ -626,11 +644,13 @@ impl BytesReader {
 ///     println!("Found {} foos and {} bars!", foobar.foos.len(), foobar.bars.len());
 /// }
 /// ```
+#[cfg(any(feature = "std", feature = "alloc"))]
 pub struct Reader {
     buffer: Vec<u8>,
     inner: BytesReader,
 }
 
+#[cfg(any(feature = "std", feature = "alloc"))]
 impl Reader {
     /// Creates a new `Reader`
     #[cfg(feature = "std")]
@@ -703,7 +723,7 @@ pub fn deserialize_from_slice<'a, M: MessageRead<'a>>(bytes: &'a [u8]) -> Result
 /// `PackedFixed` variant that owns its own data (perhaps when setting the data
 /// themselves). It is mainly for this reason that the `Owned` variant is
 /// provided, which owns a `Vec<T>`.
-/// 
+///
 /// One implementation detail is that the `Owned` variant is always aligned, so
 /// no use of `read_unaligned` is necessary. Methods are provided to convert
 /// from `Borrowed` to `Owned`, if it is found that it helps compiler
@@ -722,8 +742,9 @@ pub enum PackedFixed<'a, T: Copy + PartialEq> {
     /// in order to avoid delay from that memory allocation. So far, I can't
     /// think of any way to take advantage of the situations when it is
     /// coincidentally aligned.
-    Borrowed(&'a [u8]),
+    Borrowed(&'a [u8], PhantomData<T>),
     /// Variant that contains an owned vector of numbers.
+    #[cfg(any(feature = "std", feature = "alloc"))]
     Owned(Vec<T>),
 }
 
@@ -731,7 +752,8 @@ impl<'a, T: Copy + PartialEq> PackedFixed<'a, T> {
     /// Return the length of the DATA (not the bytes).
     pub fn len(&self) -> usize {
         match self {
-            PackedFixed::Borrowed(bytes) => bytes.len() / ::core::mem::size_of::<T>(),
+            PackedFixed::Borrowed(bytes, _) => bytes.len() / ::core::mem::size_of::<T>(),
+            #[cfg(any(feature = "std", feature = "alloc"))]
             PackedFixed::Owned(v) => v.len(),
             PackedFixed::NoDataYet => 0,
         }
@@ -739,10 +761,11 @@ impl<'a, T: Copy + PartialEq> PackedFixed<'a, T> {
 
     /// Mutate in place to `Owned` variant. In the case of `Borrowed`, this
     /// performs a bitwise copy of the entire slice.
+    #[cfg(any(feature = "std", feature = "alloc"))]
     pub fn own(&mut self) {
         match self {
             PackedFixed::NoDataYet => *self = PackedFixed::Owned(Vec::new()),
-            PackedFixed::Borrowed(_) => {
+            PackedFixed::Borrowed(_, _) => {
                 *self = self.make_owned_variant_from_unaligned_buf();
             }
             PackedFixed::Owned(_) => {} // no-op for PackedFixed::Owned, just like Cow
@@ -758,10 +781,11 @@ impl<'a, T: Copy + PartialEq> PackedFixed<'a, T> {
     /// moving `self`, but we can't do this for the `Borrowed` variant, so
     /// we have no such method on `PackedFixed` as a whole. And anyway, this is
     /// what `at()` on `Borrowed` is for.
+    #[cfg(any(feature = "std", feature = "alloc"))]
     pub fn into_vec(self) -> Vec<T> {
         match self {
             PackedFixed::NoDataYet => Vec::new(),
-            PackedFixed::Borrowed(_) => self.make_vec_from_unaligned_buf(),
+            PackedFixed::Borrowed(_, _) => self.make_vec_from_unaligned_buf(),
             PackedFixed::Owned(v) => v,
         }
     }
@@ -773,7 +797,7 @@ impl<'a, T: Copy + PartialEq> PackedFixed<'a, T> {
     /// runtime, as if the underlying data was already in form `Vec<T>`.
     pub fn at(&self, index: usize) -> T {
         match self {
-            PackedFixed::Borrowed(bytes) => {
+            PackedFixed::Borrowed(bytes, _) => {
                 let byte_offset = index * core::mem::size_of::<T>();
                 if byte_offset >= bytes.len() {
                     panic!("PackedFixed::at(): Index out of range!");
@@ -785,12 +809,14 @@ impl<'a, T: Copy + PartialEq> PackedFixed<'a, T> {
                     (ptr as *const T).read_unaligned()
                 }
             }
+            #[cfg(any(feature = "std", feature = "alloc"))]
             PackedFixed::Owned(v) => v[index],
             PackedFixed::NoDataYet => panic!("Cannot call at() on PackedFixed::NoDataYet!"),
         }
     }
 
     /// Mutate `self` to `Owned` variant before returning immutable slice
+    #[cfg(any(feature = "std", feature = "alloc"))]
     pub fn to_slice(&mut self) -> &[T] {
         self.own();
         if let PackedFixed::Owned(ref contents) = *self {
@@ -801,6 +827,7 @@ impl<'a, T: Copy + PartialEq> PackedFixed<'a, T> {
     }
 
     /// Mutate `self` to `Owned` variant before returning mutable slice
+    #[cfg(any(feature = "std", feature = "alloc"))]
     pub fn to_mut_slice(&mut self) -> &mut [T] {
         self.own();
         if let PackedFixed::Owned(ref mut contents) = *self {
@@ -814,15 +841,17 @@ impl<'a, T: Copy + PartialEq> PackedFixed<'a, T> {
     pub fn is_empty(&self) -> bool {
         match self {
             PackedFixed::NoDataYet => true,
-            PackedFixed::Borrowed(bytes) => bytes.is_empty(),
+            PackedFixed::Borrowed(bytes, _) => bytes.is_empty(),
+            #[cfg(any(feature = "std", feature = "alloc"))]
             PackedFixed::Owned(contents) => contents.is_empty(),
         }
     }
 
     // This method is private and mainly to avoid repetition in code.
+    #[cfg(any(feature = "std", feature = "alloc"))]
     fn make_vec_from_unaligned_buf(&self) -> Vec<T> {
         match &self {
-            PackedFixed::Borrowed(bytes) => unsafe {
+            PackedFixed::Borrowed(bytes, _) => unsafe {
                 let src = bytes.as_ptr();
                 let mut buf = Vec::<T>::with_capacity(self.len());
                 let dst = buf.as_mut_ptr() as *mut u8;
@@ -835,11 +864,10 @@ impl<'a, T: Copy + PartialEq> PackedFixed<'a, T> {
     }
 
     // This method is private and mainly to avoid repetition in code.
+    #[cfg(any(feature = "std", feature = "alloc"))]
     fn make_owned_variant_from_unaligned_buf(&self) -> Self {
         match &self {
-            PackedFixed::Borrowed(_) => {
-                PackedFixed::Owned(self.make_vec_from_unaligned_buf())
-            }
+            PackedFixed::Borrowed(_, _) => PackedFixed::Owned(self.make_vec_from_unaligned_buf()),
             _ => unreachable!(),
         }
     }
@@ -926,22 +954,24 @@ impl<'a, T: Copy + PartialEq> IntoIterator for &'a PackedFixed<'a, T> {
 
 impl<'a, T: Copy + PartialEq, const N: usize> From<&'a [u8; N]> for PackedFixed<'a, T> {
     fn from(value: &'a [u8; N]) -> Self {
-        Self::Borrowed(value)
+        Self::Borrowed(value, PhantomData)
     }
 }
 
 impl<'a, T: Copy + PartialEq> From<&'a [u8]> for PackedFixed<'a, T> {
     fn from(value: &'a [u8]) -> Self {
-        Self::Borrowed(value)
+        Self::Borrowed(value, PhantomData)
     }
 }
 
+#[cfg(any(feature = "std", feature = "alloc"))]
 impl<'a, T: Copy + PartialEq> From<&'a Vec<u8>> for PackedFixed<'a, T> {
     fn from(value: &'a Vec<u8>) -> Self {
-        Self::Borrowed(value)
+        Self::Borrowed(value, PhantomData)
     }
 }
 
+#[cfg(any(feature = "std", feature = "alloc"))]
 impl<'a, T: Copy + PartialEq> From<Vec<T>> for PackedFixed<'a, T> {
     fn from(value: Vec<T>) -> Self {
         Self::Owned(value)
@@ -1014,15 +1044,21 @@ fn test_packed_fixed_iter() {
 
 #[test]
 fn test_packed_fixed_eq() {
-    let v = vec![0x01u8, 0x00u8, 0x00u8, 0x00u8, 0x02u8, 0x00u8, 0x00u8, 0x00u8, 0x03u8, 0x00u8, 0x00u8, 0x00u8];
-    let borrowed: PackedFixed<i32> = PackedFixed::Borrowed(&v);
+    let v = vec![
+        0x01u8, 0x00u8, 0x00u8, 0x00u8, 0x02u8, 0x00u8, 0x00u8, 0x00u8, 0x03u8, 0x00u8, 0x00u8,
+        0x00u8,
+    ];
+    let borrowed: PackedFixed<i32> = PackedFixed::Borrowed(&v, PhantomData);
     let mut owned: PackedFixed<i32> = borrowed.clone();
     owned.own();
 
-    let owned_reversed: PackedFixed<i32> = vec![3,2,1].into();
+    let owned_reversed: PackedFixed<i32> = vec![3, 2, 1].into();
 
-    let v_reversed = vec![0x03u8, 0x00u8, 0x00u8, 0x00u8, 0x02u8, 0x00u8, 0x00u8, 0x00u8, 0x01u8, 0x00u8, 0x00u8, 0x00u8];
-    let borrowed_reversed: PackedFixed<i32> = PackedFixed::Borrowed(&v_reversed);
+    let v_reversed = vec![
+        0x03u8, 0x00u8, 0x00u8, 0x00u8, 0x02u8, 0x00u8, 0x00u8, 0x00u8, 0x01u8, 0x00u8, 0x00u8,
+        0x00u8,
+    ];
+    let borrowed_reversed: PackedFixed<i32> = PackedFixed::Borrowed(&v_reversed, PhantomData);
 
     let ndy: PackedFixed<i32> = PackedFixed::NoDataYet;
     let ndy2: PackedFixed<i32> = PackedFixed::NoDataYet;

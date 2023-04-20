@@ -88,10 +88,10 @@ fn run() -> Result<(), Error> {
                 .required(false)
                 .help("Generate Owned structs when the proto stuct has a lifetime"),
         ).arg(
-            Arg::with_name("NOSTD")
-                .long("nostd")
+            Arg::with_name("ALLOC")
+                .long("alloc")
                 .required(false)
-                .help("Generate no_std compliant code"),
+                .help("Generate no_std compliant code using alloc"),
         ).arg(
             Arg::with_name("HASHBROWN")
                 .long("hashbrown")
@@ -138,7 +138,7 @@ fn run() -> Result<(), Error> {
     .headers(!matches.is_present("NO_HEADERS"))
     .dont_use_cow(matches.is_present("DONT_USE_COW"))
     .custom_struct_derive(custom_struct_derive)
-    .nostd(matches.is_present("NOSTD"))
+    .alloc(matches.is_present("ALLOC"))
     .hashbrown(matches.is_present("HASHBROWN"))
     .gen_info(matches.is_present("GEN_INFO"))
     .custom_repr(custom_repr)

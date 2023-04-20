@@ -59,7 +59,7 @@ pub struct ConfigBuilder {
     custom_struct_derive: Vec<String>,
     custom_repr: Option<String>,
     owned: bool,
-    nostd: bool,
+    alloc: bool,
     hashbrown: bool,
     gen_info: bool,
     add_deprecated_fields: bool,
@@ -170,9 +170,9 @@ impl ConfigBuilder {
         self
     }
 
-    /// Generate `#![no_std]` compliant code
-    pub fn nostd(mut self, val: bool) -> Self {
-        self.nostd = val;
+    /// Generate `#![no_std]` compliant code using `alloc`
+    pub fn alloc(mut self, val: bool) -> Self {
+        self.alloc = val;
         self
     }
 
@@ -231,7 +231,7 @@ impl ConfigBuilder {
                     custom_rpc_generator: Box::new(|_, _| Ok(())),
                     custom_includes: Vec::new(),
                     owned: self.owned,
-                    nostd: self.nostd,
+                    alloc: self.alloc,
                     hashbrown: self.hashbrown,
                     gen_info: self.gen_info,
                     add_deprecated_fields: self.add_deprecated_fields,

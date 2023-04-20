@@ -19,6 +19,7 @@ proto_sets=(
     quick-protobuf/examples/pb_rs_v3
     quick-protobuf/tests/packed_primitives
     quick-protobuf/tests/rust_protobuf/common
+    quick-protobuf/no-std-example/src
 )
 
 nostd_proto_sets=(
@@ -30,7 +31,7 @@ for ps in "${proto_sets[@]}"; do
 done
 
 for ps in "${nostd_proto_sets[@]}"; do
-  cargo run -p pb-rs -- --nostd -I "$ps" -d "$ps" "$ps"/*.proto
+  cargo run -p pb-rs -- --alloc -I "$ps" -d "$ps" "$ps"/*.proto
 done
 
 rm -rf quick-protobuf/examples/pb_rs_v3/owned

@@ -1,4 +1,4 @@
-use crate::types::{FileDescriptor, Frequency, MessageIndex};
+use crate::types::{FileDescriptor, MessageIndex};
 use std::cmp::min;
 use std::collections::HashMap;
 

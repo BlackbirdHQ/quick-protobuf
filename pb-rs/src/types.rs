@@ -317,7 +317,11 @@ impl FieldType {
         matches!(self.wire_type_num_non_packed(), 1 | 5)
     }
 
-    fn singular_field_defaults(&self, desc: &FileDescriptor) -> String {
+    fn singular_field_defaults(
+        &self,
+        desc: &FileDescriptor,
+        rust_capacity: Option<usize>,
+    ) -> String {
         match *self {
             FieldType::Int32 => "0i32".to_owned(),
             FieldType::Sint32 => "0i32".to_owned(),
@@ -333,8 +337,14 @@ impl FieldType {
             FieldType::Sfixed64 => "0i64".to_owned(),
             FieldType::Double => "0f64".to_owned(),
             FieldType::StringCow => "Cow::Borrowed(\"\")".to_owned(),
+            FieldType::String_ if rust_capacity.is_some() => {
+                format!("heapless::String::<{}>::new()", rust_capacity.unwrap())
+            }
             FieldType::String_ => "\"\".to_string()".to_owned(),
             FieldType::BytesCow => "Cow::Borrowed(b\"\")".to_owned(),
+            FieldType::Bytes_ if rust_capacity.is_some() => {
+                format!("heapless::Vec::<u8, {}>::new()", rust_capacity.unwrap())
+            }
             FieldType::Bytes_ => "Vec::<u8>::new()".to_owned(),
             FieldType::Enum(ref e) => {
                 let e = e.get_enum(desc);
@@ -360,6 +370,7 @@ impl FieldType {
         &self,
         desc: &FileDescriptor,
         config: &Config,
+        rust_capacity: bool,
         packed: bool,
         ignore: &mut Vec<MessageIndex>,
     ) -> bool {
@@ -373,16 +384,21 @@ impl FieldType {
             | FieldType::Sfixed32
             | FieldType::String_
             | FieldType::Bytes_
-            | FieldType::Float => packed, // Cow<[M]>
+            | FieldType::Float => !rust_capacity && packed, // Cow<[M]>
             FieldType::Map(ref key, ref value) => {
-                key.has_lifetime(desc, config, false, ignore)
-                    || value.has_lifetime(desc, config, false, ignore)
+                key.has_lifetime(desc, config, false, false, ignore)
+                    || value.has_lifetime(desc, config, false, false, ignore)
             }
             _ => false,
         }
     }
 
-    fn rust_type(&self, desc: &FileDescriptor, config: &Config) -> Result<String> {
+    fn rust_type(
+        &self,
+        desc: &FileDescriptor,
+        config: &Config,
+        rust_capacity: Option<usize>,
+    ) -> Result<String> {
         Ok(match *self {
             FieldType::Int32 | FieldType::Sint32 | FieldType::Sfixed32 => "i32".to_string(),
             FieldType::Int64 | FieldType::Sint64 | FieldType::Sfixed64 => "i64".to_string(),
@@ -392,7 +408,13 @@ impl FieldType {
             FieldType::Float => "f32".to_string(),
             FieldType::StringCow => "Cow<'a, str>".to_string(),
             FieldType::BytesCow => "Cow<'a, [u8]>".to_string(),
+            FieldType::String_ if rust_capacity.is_some() => {
+                format!("heapless::String<{}>", rust_capacity.unwrap())
+            }
             FieldType::String_ => "String".to_string(),
+            FieldType::Bytes_ if rust_capacity.is_some() => {
+                format!("heapless::Vec<u8, {}>", rust_capacity.unwrap())
+            }
             FieldType::Bytes_ => "Vec<u8>".to_string(),
             FieldType::Bool => "bool".to_string(),
             FieldType::Enum(ref e) => {
@@ -410,15 +432,19 @@ impl FieldType {
             }
             FieldType::Map(ref key, ref value) => format!(
                 "KVMap<{}, {}>",
-                key.rust_type(desc, config)?,
-                value.rust_type(desc, config)?
+                key.rust_type(desc, config, rust_capacity)?,
+                value.rust_type(desc, config, rust_capacity)?
             ),
             FieldType::MessageOrEnum(_) => unreachable!("Message / Enum not resolved"),
         })
     }
 
     /// Returns the relevant function to read the data, both for regular and Cow wrapped
-    fn read_fn(&self, desc: &FileDescriptor) -> Result<(String, String)> {
+    fn read_fn(
+        &self,
+        desc: &FileDescriptor,
+        rust_capacity: Option<usize>,
+    ) -> Result<(String, String)> {
         Ok(match *self {
             FieldType::Message(ref msg) => {
                 let m = msg.get_message(desc);
@@ -435,9 +461,23 @@ impl FieldType {
                 let cow = format!("{}.map(Cow::Borrowed)?", m);
                 (m, cow)
             }
+            FieldType::String_ if rust_capacity.is_some() => {
+                let m = format!("r.read_{}(bytes)", self.proto_type());
+                let vec = format!(
+                    "heapless::String::<{}>::from({}?)",
+                    rust_capacity.unwrap(),
+                    m
+                );
+                (m, vec)
+            }
             FieldType::String_ => {
                 let m = format!("r.read_{}(bytes)", self.proto_type());
                 let vec = format!("{}?.to_owned()", m);
+                (m, vec)
+            }
+            FieldType::Bytes_ if rust_capacity.is_some() => {
+                let m = format!("r.read_{}(bytes)", self.proto_type());
+                let vec = format!("heapless::Vec::<u8, {}>::from_slice({}?).map_err(|_| quick_protobuf::Error::OutputBufferTooSmall)?", rust_capacity.unwrap(), m);
                 (m, vec)
             }
             FieldType::Bytes_ => {
@@ -529,6 +569,7 @@ pub struct Field {
     pub packed: Option<bool>,
     pub boxed: bool,
     pub deprecated: bool,
+    pub rust_capacity: Option<usize>,
 }
 
 impl Field {
@@ -540,7 +581,7 @@ impl Field {
         let optional_or_required = matches!(
             self.frequency,
             Frequency::Proto2Frequency(Proto2Frequency::Optional)
-            | Frequency::Proto2Frequency(Proto2Frequency::Required)
+                | Frequency::Proto2Frequency(Proto2Frequency::Required)
         );
 
         // Default values for message fields are language-specific, and most
@@ -563,7 +604,7 @@ impl Field {
         // 2. Custom default influences the field's initialization values
         //    instead of creating a default `const`.
         self.has_valid_visible_custom_default(desc, config)
-        && self.frequency == Frequency::Proto2Frequency(Proto2Frequency::Required)
+            && self.frequency == Frequency::Proto2Frequency(Proto2Frequency::Required)
     }
 
     fn must_generate_custom_default_const(&self, desc: &FileDescriptor, config: &Config) -> bool {
@@ -576,8 +617,7 @@ impl Field {
         //    value for reference (either manually or through an autogenerated
         //    getter if the command line argument `--generate-getters` has been
         //    set).
-        self.has_valid_visible_custom_default(desc, config)
-        && self.frequency.is_optional()
+        self.has_valid_visible_custom_default(desc, config) && self.frequency.is_optional()
     }
 
     fn must_generate_getter(&self, desc: &FileDescriptor, config: &Config) -> bool {
@@ -591,13 +631,17 @@ impl Field {
         // without custom default tags are less likely to be used in a manner
         // that involves referencing the default value (and the user can always
         // do it the manual way)
-        self.must_generate_custom_default_const(desc, config)
-        && config.generate_getters
+        self.must_generate_custom_default_const(desc, config) && config.generate_getters
     }
 
-    fn write_getter<W: Write>(&self, w: &mut W, desc: &FileDescriptor, config: &Config) -> Result<()> {
+    fn write_getter<W: Write>(
+        &self,
+        w: &mut W,
+        desc: &FileDescriptor,
+        config: &Config,
+    ) -> Result<()> {
         if !(self.must_generate_getter(desc, config)) {
-            return Ok(())
+            return Ok(());
         }
 
         let name = self.name.to_owned();
@@ -608,9 +652,9 @@ impl Field {
         }
 
         let default_const_name = self.get_default_const_name()?;
-        
+
         writeln!(w, "    pub fn get_{name}(&self) -> {return_type} {{")?;
-        
+
         if self.typ.is_non_cow_string_or_byte() {
             match self.typ {
                 FieldType::String_ => {
@@ -618,21 +662,17 @@ impl Field {
                         w,
                         "        &self.{name}.as_ref().map(|s| s.as_str()).unwrap_or(Self::{default_const_name})",
                     )?;
-                },
+                }
                 FieldType::Bytes_ => {
                     writeln!(
                         w,
                         "        &self.{name}.as_ref().map(|s| s.as_slice()).unwrap_or(Self::{default_const_name})",
                     )?;
-                },
+                }
                 _ => unreachable!(),
             }
         } else {
-            let dont_deref_if_cow = if !self.typ.is_cow() {
-                "*"
-            } else {
-                ""
-            };
+            let dont_deref_if_cow = if !self.typ.is_cow() { "*" } else { "" };
 
             writeln!(
                 w,
@@ -675,7 +715,7 @@ impl Field {
                 _ => unreachable!(),
             })
         } else {
-            self.typ.rust_type(desc, config)
+            self.typ.rust_type(desc, config, self.rust_capacity)
         }
     }
 
@@ -761,7 +801,7 @@ impl Field {
                             }
                             custom_default.clone()
                         }
-                        None => self.typ.singular_field_defaults(desc),
+                        None => self.typ.singular_field_defaults(desc, self.rust_capacity),
                     }
                 }
             }
@@ -780,9 +820,13 @@ impl Field {
         self.packed.unwrap_or(false)
     }
 
+    fn rust_capacity(&self) -> bool {
+        self.rust_capacity.is_some()
+    }
+
     fn sanitize_default(&mut self, desc: &FileDescriptor, config: &Config) -> Result<()> {
         if let Some(ref mut d) = self.default {
-            *d = match &*self.typ.rust_type(desc, config)? {
+            *d = match &*self.typ.rust_type(desc, config, self.rust_capacity)? {
                 "u32" => format!("{}u32", *d),
                 "u64" => format!("{}u64", *d),
                 "i32" => format!("{}i32", *d),
@@ -816,7 +860,10 @@ impl Field {
     }
 
     pub fn get_type(&self, desc: &FileDescriptor, config: &Config) -> String {
-        let rust_type = self.typ.rust_type(desc, config).unwrap();
+        let rust_type = self
+            .typ
+            .rust_type(desc, config, self.rust_capacity)
+            .unwrap();
         if self.boxed {
             return format!("Option<Box<{}>>", rust_type);
         }
@@ -830,7 +877,13 @@ impl Field {
                 }
             }
             GeneratedType::ArrayLikeType => {
-                if self.packed() && self.typ.is_fixed_size() && !config.dont_use_cow {
+                if self.rust_capacity() {
+                    format!(
+                        "heapless::Vec<{}, {}>",
+                        rust_type,
+                        self.rust_capacity.unwrap()
+                    )
+                } else if self.packed() && self.typ.is_fixed_size() && !config.dont_use_cow {
                     format!("PackedFixed<'a, {}>", rust_type)
                 } else {
                     format!("Vec<{}>", rust_type)
@@ -873,7 +926,7 @@ impl Field {
         let (val, val_cow) = if self.frequency.is_map() {
             ("".to_owned(), "".to_owned()) // ignore if is map
         } else {
-            self.typ.read_fn(desc)?
+            self.typ.read_fn(desc, self.rust_capacity)?
         };
 
         let name = &self.name;
@@ -899,7 +952,13 @@ impl Field {
             },
             GeneratedType::ArrayLikeType => {
                 if self.packed() {
-                    if self.typ.is_fixed_size() {
+                    if self.rust_capacity() {
+                        writeln!(
+                            w,
+                            "msg.{} = r.read_packed_heapless(bytes, |r, bytes| Ok({}))?,",
+                            name, val_cow
+                        )?;
+                    } else if self.typ.is_fixed_size() {
                         writeln!(w, "msg.{} = r.read_packed_fixed(bytes)?,", name)?;
                     } else {
                         writeln!(
@@ -908,6 +967,8 @@ impl Field {
                             name, val_cow
                         )?;
                     }
+                } else if self.rust_capacity() {
+                    writeln!(w, "msg.{}.push({}).map_err(|_| quick_protobuf::Error::OutputBufferTooSmall)?,", name, val_cow)?;
                 } else {
                     writeln!(w, "msg.{}.push({}),", name, val_cow)?;
                 }
@@ -921,8 +982,8 @@ impl Field {
                         w,
                         "                    let (key, value) = \
                         r.read_map(bytes, |r, bytes| Ok({}), |r, bytes| Ok({}))?;",
-                        key.read_fn(desc)?.1,
-                        value.read_fn(desc)?.1
+                        key.read_fn(desc, self.rust_capacity)?.1,
+                        value.read_fn(desc, self.rust_capacity)?.1
                     )?;
                     writeln!(
                         w,
@@ -1171,7 +1232,8 @@ impl Field {
                     let name = self.name.clone();
                     let def = self.get_field_default(desc, config);
                     let m_core = apply_unwrapping_code(self, false, "m");
-                    let self_name_core = apply_unwrapping_code(self, false, format!("self.{name}").as_str());
+                    let self_name_core =
+                        apply_unwrapping_code(self, false, format!("self.{name}").as_str());
                     let m_write_method = get_write_method(self, m_core.as_str());
                     let self_name_write_method = get_write_method(self, &self_name_core);
                     let maybe_deref_m = if self.boxed || !self.typ.is_primitive() {
@@ -1194,24 +1256,23 @@ impl Field {
             }
             GeneratedType::ArrayLikeType => {
                 if self.packed() {
-                    if self.typ.is_fixed_size() {
-                        writeln!(
-                            w,
-                            "w.write_packed_fixed_with_tag({}, &self.{})?;",
-                            self.tag(),
-                            self.name
-                        )?;
-                    } else {
-                        writeln!(
-                            w,
-                            "w.write_packed_with_tag({}, &self.{}, |w, &m| w.{}, &|&m| {})?;",
-                            self.tag(),
-                            self.name,
-                            self.typ
-                                .get_write("m", self.boxed),
-                            self.typ.get_size("m")
-                        )?
-                    }
+                    // if self.typ.is_fixed_size() {
+                    //     writeln!(
+                    //         w,
+                    //         "w.write_packed_fixed_with_tag({}, &self.{})?;",
+                    //         self.tag(),
+                    //         self.name
+                    //     )?;
+                    // } else {
+                    writeln!(
+                        w,
+                        "w.write_packed_with_tag({}, &self.{}, |w, &m| w.{}, &|&m| {})?;",
+                        self.tag(),
+                        self.name,
+                        self.typ.get_write("m", self.boxed),
+                        self.typ.get_size("m")
+                    )?
+                    // }
                 } else {
                     let maybe_deref_s = if self.typ.need_to_dereference() {
                         "*s"
@@ -1374,7 +1435,8 @@ impl Message {
         }
         ignore.push(self.index.clone());
         let res = self.all_fields().any(|f| {
-            f.typ.has_lifetime(desc, config, f.packed(), ignore)
+            f.typ
+                .has_lifetime(desc, config, f.rust_capacity(), f.packed(), ignore)
                 && (!f.deprecated || config.add_deprecated_fields)
         });
         ignore.pop();
@@ -1410,8 +1472,10 @@ impl Message {
         desc: &FileDescriptor,
         config: &Config,
     ) -> Result<()> {
-        if config.nostd {
+        if config.alloc {
+            writeln!(w, "extern crate alloc;")?;
             writeln!(w, "use alloc::vec::Vec;")?;
+            writeln!(w, "use alloc::string::String;")?;
         }
 
         if !config.dont_use_cow {
@@ -1419,13 +1483,13 @@ impl Message {
                 m.all_fields()
                     .any(|f| (f.typ.has_cow() || (f.packed() && f.typ.is_fixed_size())))
             }) {
-                if config.nostd {
+                if config.alloc {
                     writeln!(w, "use alloc::borrow::Cow;")?;
                 } else {
                     writeln!(w, "use std::borrow::Cow;")?;
                 }
             }
-        } else if config.nostd
+        } else if config.alloc
             && messages
                 .iter()
                 .any(|m| m.all_fields().any(|f| (f.typ.has_bytes_and_string())))
@@ -1433,7 +1497,7 @@ impl Message {
             writeln!(w, "use alloc::borrow::ToOwned;")?;
         }
 
-        if config.nostd
+        if config.alloc
             && messages.iter().any(|m| {
                 desc.owned && m.has_lifetime(desc, config, &mut Vec::new())
                     || m.all_fields().any(|f| f.boxed)
@@ -1451,7 +1515,7 @@ impl Message {
             if config.hashbrown {
                 writeln!(w, "use hashbrown::HashMap;")?;
                 writeln!(w, "type KVMap<K, V> = HashMap<K, V>;")?;
-            } else if config.nostd {
+            } else if config.alloc {
                 writeln!(w, "use alloc::collections::BTreeMap;")?;
                 writeln!(w, "type KVMap<K, V> = BTreeMap<K, V>;")?;
             } else {
@@ -1463,7 +1527,12 @@ impl Message {
         Ok(())
     }
 
-    fn write_getters<W: Write>(&self, w: &mut W, desc: &FileDescriptor, config: &Config) -> Result<()> {
+    fn write_getters<W: Write>(
+        &self,
+        w: &mut W,
+        desc: &FileDescriptor,
+        config: &Config,
+    ) -> Result<()> {
         let mut ignore = Vec::new();
         if config.dont_use_cow {
             ignore.push(self.index.clone());
@@ -1482,16 +1551,22 @@ impl Message {
     }
 
     fn must_generate_custom_default_consts(&self, desc: &FileDescriptor, config: &Config) -> bool {
-        self.fields.iter().any(|f| f.must_generate_custom_default_const(desc, config))
+        self.fields
+            .iter()
+            .any(|f| f.must_generate_custom_default_const(desc, config))
     }
 
     fn must_generate_getters(&self, desc: &FileDescriptor, config: &Config) -> bool {
-        self.fields.iter().any(|f| f.must_generate_getter(desc, config))
-        && config.generate_getters
+        self.fields
+            .iter()
+            .any(|f| f.must_generate_getter(desc, config))
+            && config.generate_getters
     }
 
     fn must_generate_impl_default(&self, desc: &FileDescriptor, config: &Config) -> bool {
-        self.fields.iter().any(|f| f.must_generate_impl_default(desc, config))
+        self.fields
+            .iter()
+            .any(|f| f.must_generate_impl_default(desc, config))
     }
 
     fn write<W: Write>(&self, w: &mut W, desc: &FileDescriptor, config: &Config) -> Result<()> {
@@ -2250,7 +2325,7 @@ impl OneOf {
     fn has_lifetime(&self, desc: &FileDescriptor, config: &Config) -> bool {
         self.fields.iter().any(|f| {
             f.typ
-                .has_lifetime(desc, config, f.packed(), &mut Vec::new())
+                .has_lifetime(desc, config, f.rust_capacity(), f.packed(), &mut Vec::new())
                 && (!f.deprecated || config.add_deprecated_fields)
         })
     }
@@ -2301,7 +2376,7 @@ impl OneOf {
                 }
             }
 
-            let rust_type = f.typ.rust_type(desc, config)?;
+            let rust_type = f.typ.rust_type(desc, config, f.rust_capacity)?;
             if f.boxed {
                 writeln!(w, "    {}(Box<{}>),", f.name, rust_type)?;
             } else {
@@ -2331,7 +2406,7 @@ impl OneOf {
             .iter()
             .filter(|f| !f.deprecated || config.add_deprecated_fields)
         {
-            let rust_type = f.typ.rust_type(desc, config)?;
+            let rust_type = f.typ.rust_type(desc, config, f.rust_capacity)?;
             if handled_fields.contains(&rust_type) {
                 continue;
             }
@@ -2402,7 +2477,7 @@ impl OneOf {
             .iter()
             .filter(|f| !f.deprecated || config.add_deprecated_fields)
         {
-            let (val, val_cow) = f.typ.read_fn(desc)?;
+            let (val, val_cow) = f.typ.read_fn(desc, f.rust_capacity)?;
             if f.boxed {
                 writeln!(
                     w,
@@ -2544,7 +2619,7 @@ pub struct Config {
     pub custom_rpc_generator: RpcGeneratorFunction,
     pub custom_includes: Vec<String>,
     pub owned: bool,
-    pub nostd: bool,
+    pub alloc: bool,
     pub hashbrown: bool,
     pub gen_info: bool,
     pub add_deprecated_fields: bool,
