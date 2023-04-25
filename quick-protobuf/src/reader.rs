@@ -504,6 +504,18 @@ impl BytesReader {
 
     /// Reads a nested message
     ///
+    /// The length is computed from the size of the message `bytes`
+    #[cfg_attr(std, inline)]
+    pub fn read_message_without_len<'a, M>(&mut self, bytes: &'a [u8]) -> Result<M>
+    where
+        M: MessageRead<'a>,
+    {
+        let len = bytes.len();
+        self.read_len(bytes, M::from_reader, len)
+    }
+
+    /// Reads a nested message
+    ///
     /// Reads just the message and does not try to read it's size first.
     ///  * 'len' - The length of the message to be read.
     #[cfg_attr(std, inline)]
@@ -705,6 +717,8 @@ impl Reader {
 }
 
 /// Deserialize a `MessageRead from a `&[u8]`
+///
+/// Must be prefixed with the length of the message
 pub fn deserialize_from_slice<'a, M: MessageRead<'a>>(bytes: &'a [u8]) -> Result<M> {
     let mut reader = BytesReader::from_bytes(bytes);
     reader.read_message::<M>(bytes)
@@ -982,6 +996,12 @@ impl<'a, T: Copy + PartialEq> PartialEq for PackedFixed<'a, T> {
     fn eq(&self, other: &Self) -> bool {
         self.into_iter().eq(other)
     }
+}
+
+/// Deserialize a `MessageRead from a `&[u8]` without a length prefix
+pub fn deserialize_from_slice_without_len<'a, M: MessageRead<'a>>(bytes: &'a [u8]) -> Result<M> {
+    let mut reader = BytesReader::from_bytes(&bytes);
+    reader.read_message_without_len::<M>(&bytes)
 }
 
 #[test]
