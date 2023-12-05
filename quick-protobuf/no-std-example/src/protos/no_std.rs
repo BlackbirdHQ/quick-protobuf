@@ -95,7 +95,7 @@ impl<'a> MessageRead<'a> for NoStdMessage {
         let mut msg = Self::default();
         while !r.is_eof() {
             match r.next_tag(bytes) {
-                Ok(10) => msg.num = heapless::String::<32>::from(r.read_string(bytes)?),
+                Ok(10) => msg.num = heapless::String::<32>::try_from(r.read_string(bytes)?).unwrap(),
                 Ok(18) => msg.nums = r.read_packed_heapless(bytes, |r, bytes| Ok(r.read_fixed32(bytes)?))?,
                 Ok(26) => msg.message = Some(r.read_message::<protos::no_std::EmbeddedMessage>(bytes)?),
                 Ok(34) => msg.messages.push(r.read_message::<protos::no_std::EmbeddedMessage>(bytes)?).map_err(|_| quick_protobuf::Error::OutputBufferTooSmall)?,

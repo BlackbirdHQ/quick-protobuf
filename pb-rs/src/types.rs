@@ -464,7 +464,7 @@ impl FieldType {
             FieldType::String_ if rust_capacity.is_some() => {
                 let m = format!("r.read_{}(bytes)", self.proto_type());
                 let vec = format!(
-                    "heapless::String::<{}>::from({}?)",
+                    "heapless::String::<{}>::try_from({}?).unwrap()",
                     rust_capacity.unwrap(),
                     m
                 );

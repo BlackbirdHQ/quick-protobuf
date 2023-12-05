@@ -16,7 +16,7 @@ pub fn round_trip() {
     
     let message = NoStdMessage {
         // num: String::from("value"),
-        num: heapless::String::from("value"),
+        num: heapless::String::try_from("value").unwrap(),
         nums: heapless::Vec::from_slice(&[10, 15, 63]).unwrap(),
         message: Some(protos::no_std::EmbeddedMessage {
             val: -1337,

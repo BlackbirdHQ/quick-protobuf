@@ -6,6 +6,6 @@ edition = "2018"
 
 [dependencies]
 quick-protobuf = { path = "..", default-features = false, features = ["heapless"] }
-heapless = { version = "0.7.16", default-features = false }
+heapless = { version = "0.8", default-features = false }
 
 [workspace]
