@@ -359,7 +359,7 @@ where
                         .unwrap_or(false),
                     rust_capacity: key_vals.iter().find_map(|&(k, v)| {
                         if k == "rust_capacity" {
-                            Some(v.parse().expect("Cannot parse rust_capacity value"))
+                            Some(v.to_string())
                         } else {
                             None
                         }

@@ -320,7 +320,7 @@ impl FieldType {
     fn singular_field_defaults(
         &self,
         desc: &FileDescriptor,
-        rust_capacity: Option<usize>,
+        rust_capacity: Option<String>,
     ) -> String {
         match *self {
             FieldType::Int32 => "0i32".to_owned(),
@@ -397,7 +397,7 @@ impl FieldType {
         &self,
         desc: &FileDescriptor,
         config: &Config,
-        rust_capacity: Option<usize>,
+        rust_capacity: Option<String>,
     ) -> Result<String> {
         Ok(match *self {
             FieldType::Int32 | FieldType::Sint32 | FieldType::Sfixed32 => "i32".to_string(),
@@ -432,8 +432,8 @@ impl FieldType {
             }
             FieldType::Map(ref key, ref value) => format!(
                 "KVMap<{}, {}>",
-                key.rust_type(desc, config, rust_capacity)?,
-                value.rust_type(desc, config, rust_capacity)?
+                key.rust_type(desc, config, rust_capacity.clone())?,
+                value.rust_type(desc, config, rust_capacity.clone())?
             ),
             FieldType::MessageOrEnum(_) => unreachable!("Message / Enum not resolved"),
         })
@@ -443,7 +443,7 @@ impl FieldType {
     fn read_fn(
         &self,
         desc: &FileDescriptor,
-        rust_capacity: Option<usize>,
+        rust_capacity: Option<String>,
     ) -> Result<(String, String)> {
         Ok(match *self {
             FieldType::Message(ref msg) => {
@@ -569,7 +569,7 @@ pub struct Field {
     pub packed: Option<bool>,
     pub boxed: bool,
     pub deprecated: bool,
-    pub rust_capacity: Option<usize>,
+    pub rust_capacity: Option<String>,
 }
 
 impl Field {
@@ -715,7 +715,7 @@ impl Field {
                 _ => unreachable!(),
             })
         } else {
-            self.typ.rust_type(desc, config, self.rust_capacity)
+            self.typ.rust_type(desc, config, self.rust_capacity.clone())
         }
     }
 
@@ -801,7 +801,9 @@ impl Field {
                             }
                             custom_default.clone()
                         }
-                        None => self.typ.singular_field_defaults(desc, self.rust_capacity),
+                        None => self
+                            .typ
+                            .singular_field_defaults(desc, self.rust_capacity.clone()),
                     }
                 }
             }
@@ -826,7 +828,10 @@ impl Field {
 
     fn sanitize_default(&mut self, desc: &FileDescriptor, config: &Config) -> Result<()> {
         if let Some(ref mut d) = self.default {
-            *d = match &*self.typ.rust_type(desc, config, self.rust_capacity)? {
+            *d = match &*self
+                .typ
+                .rust_type(desc, config, self.rust_capacity.clone())?
+            {
                 "u32" => format!("{}u32", *d),
                 "u64" => format!("{}u64", *d),
                 "i32" => format!("{}i32", *d),
@@ -862,7 +867,7 @@ impl Field {
     pub fn get_type(&self, desc: &FileDescriptor, config: &Config) -> String {
         let rust_type = self
             .typ
-            .rust_type(desc, config, self.rust_capacity)
+            .rust_type(desc, config, self.rust_capacity.clone())
             .unwrap();
         if self.boxed {
             return format!("Option<Box<{}>>", rust_type);
@@ -881,7 +886,7 @@ impl Field {
                     format!(
                         "heapless::Vec<{}, {}>",
                         rust_type,
-                        self.rust_capacity.unwrap()
+                        self.rust_capacity.clone().unwrap()
                     )
                 } else if self.packed() && self.typ.is_fixed_size() && !config.dont_use_cow {
                     format!("PackedFixed<'a, {}>", rust_type)
@@ -926,7 +931,7 @@ impl Field {
         let (val, val_cow) = if self.frequency.is_map() {
             ("".to_owned(), "".to_owned()) // ignore if is map
         } else {
-            self.typ.read_fn(desc, self.rust_capacity)?
+            self.typ.read_fn(desc, self.rust_capacity.clone())?
         };
 
         let name = &self.name;
@@ -982,8 +987,8 @@ impl Field {
                         w,
                         "                    let (key, value) = \
                         r.read_map(bytes, |r, bytes| Ok({}), |r, bytes| Ok({}))?;",
-                        key.read_fn(desc, self.rust_capacity)?.1,
-                        value.read_fn(desc, self.rust_capacity)?.1
+                        key.read_fn(desc, self.rust_capacity.clone())?.1,
+                        value.read_fn(desc, self.rust_capacity.clone())?.1
                     )?;
                     writeln!(
                         w,
@@ -2376,7 +2381,7 @@ impl OneOf {
                 }
             }
 
-            let rust_type = f.typ.rust_type(desc, config, f.rust_capacity)?;
+            let rust_type = f.typ.rust_type(desc, config, f.rust_capacity.clone())?;
             if f.boxed {
                 writeln!(w, "    {}(Box<{}>),", f.name, rust_type)?;
             } else {
@@ -2406,7 +2411,7 @@ impl OneOf {
             .iter()
             .filter(|f| !f.deprecated || config.add_deprecated_fields)
         {
-            let rust_type = f.typ.rust_type(desc, config, f.rust_capacity)?;
+            let rust_type = f.typ.rust_type(desc, config, f.rust_capacity.clone())?;
             if handled_fields.contains(&rust_type) {
                 continue;
             }
@@ -2477,7 +2482,7 @@ impl OneOf {
             .iter()
             .filter(|f| !f.deprecated || config.add_deprecated_fields)
         {
-            let (val, val_cow) = f.typ.read_fn(desc, f.rust_capacity)?;
+            let (val, val_cow) = f.typ.read_fn(desc, f.rust_capacity.clone())?;
             if f.boxed {
                 writeln!(
                     w,
